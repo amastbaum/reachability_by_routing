@@ -18,7 +18,7 @@ struct route_info {
     union {
         struct in_addr ipv4;
         struct in6_addr ipv6;
-    } dest;
+    } remote_addr;
 
     int prefix_len;
     int reachable;
@@ -56,33 +56,28 @@ static void netlink_socket_close(struct netlink_socket *nl_sock)
     }
 }
 
-void netlink_msg_init(struct netlink_message *msg, int type, int flags)
-{
-    memset(msg, 0, sizeof(*msg));
-    msg->hdr.nlmsg_len = NLMSG_LENGTH(0);
-    msg->hdr.nlmsg_type = type;
-    msg->hdr.nlmsg_flags = flags;
-    msg->hdr.nlmsg_seq = 0;
-    msg->hdr.nlmsg_pid = getpid();
-}
-
 static int netlink_send(struct netlink_socket *nl_sock, struct netlink_message *msg)
 {
-    struct iovec iov = {
-        .iov_base = &msg->hdr,
-        .iov_len = msg->hdr.nlmsg_len
-    };
+    struct nlmsghdr *nlh;
+    struct rtmsg *rtm;
 
-    struct msghdr msghdr = {
-        .msg_name = &nl_sock->peer,
-        .msg_namelen = sizeof(nl_sock->peer),
-        .msg_iov = &iov,
-        .msg_iovlen = 1,
-    };
+    memset(msg->buf, 0, sizeof(msg->buf));
+    nlh = (struct nlmsghdr *)msg->buf;
+    nlh->nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+    nlh->nlmsg_type = RTM_GETROUTE;
+    nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+    nlh->nlmsg_seq = 1;
+    nlh->nlmsg_pid = getpid();
 
-    ssize_t ret = sendmsg(nl_sock->fd, &msghdr, 0);
-    if (ret < 0) {
-        return -errno;
+    rtm = (struct rtmsg *)NLMSG_DATA(nlh);
+    rtm->rtm_family = AF_INET; /* ##### change to info->family */
+    rtm->rtm_table = RT_TABLE_MAIN;
+
+    /* send the request */
+    if (send(nl_sock->fd, nlh, nlh->nlmsg_len, 0) < 0) {
+        printf("failed to send netlink message\n");
+        close(nl_sock->fd);
+        return 0;
     }
 
     return 0;
@@ -90,18 +85,11 @@ static int netlink_send(struct netlink_socket *nl_sock, struct netlink_message *
 
 static int netlink_recv(struct netlink_socket *nl_sock, struct netlink_message *msg)
 {
-    struct iovec iov = {
-        .iov_base = msg->buf,
-        .iov_len = sizeof(msg->buf)
-    };
-    struct msghdr msghdr = {
-        .msg_name = &nl_sock->peer,
-        .msg_namelen = sizeof(nl_sock->peer),
-        .msg_iov = &iov,
-        .msg_iovlen = 1,
-    };
+    int ret;
 
-    ssize_t ret = recvmsg(nl_sock->fd, &msghdr, 0);
+    printf("msg: %p, msg->buf: %p, &msg->buf: %p, sizeof(msg->buf): %d\n", msg, msg->buf, &msg->buf, sizeof(msg->buf));
+    memset(&msg->buf, 0, sizeof(msg->buf));
+    ret = recv(nl_sock->fd, &msg->buf, sizeof(msg->buf), 0);
     if (ret < 0) {
         return -errno;
     }
@@ -110,23 +98,31 @@ static int netlink_recv(struct netlink_socket *nl_sock, struct netlink_message *
         return -ENODATA;
     }
 
-    msg->hdr = *(struct nlmsghdr *)msg->buf;
     return ret;
 }
 
-static int netlink_parse_msg(struct netlink_message *msg, void (*callback)(struct nlmsghdr *h, void *arg), void *arg)
+static int netlink_parse_msg(struct netlink_message *msg,
+                             int len,
+                             enum ucs_netlink_parse_status *status,
+                             void (*callback)(struct nlmsghdr *h, void *arg),
+                             void *arg)
 {
-    struct nlmsghdr *nlh;
-    int len = msg->hdr.nlmsg_len;
-    int remain = len - sizeof(struct nlmsghdr);
+    struct nlmsghdr *nlh = (struct nlmsghdr *)msg->buf;
+    *status = UCS_NL_STATUS_OK;
+    // int remain = len - sizeof(struct nlmsghdr);
 
-    for (nlh = &msg->hdr; NLMSG_OK(nlh, remain); nlh = NLMSG_NEXT(nlh, remain)) {
+    for (nlh; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len)) {
+        printf("nlh->nlmsg_type #2: %d\n", nlh->nlmsg_type);
         if (nlh->nlmsg_type == NLMSG_DONE) {
+            *status = UCS_NL_STATUS_DONE;
+            printf("DONE\n");
             return 0;
         }
 
         if (nlh->nlmsg_type == NLMSG_ERROR) {
             struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nlh);
+            *status = UCS_NL_STATUS_ERROR;
+            printf("ERROR\n");
             return -err->error;
         }
 
@@ -140,11 +136,12 @@ static int netlink_parse_rtattr(struct rtattr *tb[], int max, struct rtattr *rta
 {
     memset(tb, 0, sizeof(struct rtattr *) * (max + 1));
 
-    while (RTA_OK(rta, len)) {
+    printf("Parsing RTAs, len: %d\n", len);
+    for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
+        printf("rta->rta_type: %d, rta_len: %d\n", rta->rta_type, rta->rta_len);
         if (rta->rta_type <= max) {
             tb[rta->rta_type] = rta;
         }
-        rta = RTA_NEXT(rta, len);
     }
 
     return 0;
@@ -156,56 +153,56 @@ static void parse_route(struct nlmsghdr *nlh, void *arg)
     struct rtmsg *rtm = NLMSG_DATA(nlh);
     struct rtattr *rta[RTA_MAX + 1];
 
-    printf("#1\n");
+    rtm->rtm_family = info->family;
+    rtm->rtm_table = RT_TABLE_MAIN;
+
     if (rtm->rtm_family != info->family) {
         return;
     }
 
     netlink_parse_rtattr(rta, RTA_MAX, RTM_RTA(rtm), RTM_PAYLOAD(nlh));
 
-    if (rta[RTA_DST]) {
-        if (info->family == AF_INET) {
-            struct in_addr *addr = RTA_DATA(rta[RTA_DST]);
-            if (memcmp(&info->dest.ipv4, addr, sizeof(struct in_addr)) == 0) {
-                info->reachable = 1;
-            }
-        } else { // AF_INET6
-            struct in6_addr *addr = RTA_DATA(rta[RTA_DST]);
-            if (memcmp(&info->dest.ipv6, addr, sizeof(struct in6_addr)) == 0) {
-                info->reachable = 1;
-            }
-        }
+    if (rta[RTA_OIF] == NULL || rta[RTA_DST] == NULL) {
+        return;
     }
 
-    if (rta[RTA_OIF]) {
-        int *oif = RTA_DATA(rta[RTA_OIF]);
-        printf("oif: %d\n", *oif);
-        printf("info->if_index: %d\n", info->if_index);
-        if (*oif == info->if_index) {
-            info->reachable = 1;
+    int *oif = RTA_DATA(rta[RTA_OIF]);
+    printf("oif: %d\n", *oif);
+    printf("info->if_index: %d\n", info->if_index);
+    if (*oif == info->if_index) {
+        printf("#3 - matching interfaces\n");
+        if (info->family == AF_INET) {
+            printf("#4 - IPv4\n");
+            struct in_addr *addr = RTA_DATA(rta[RTA_DST]);
+            uint32_t mask = htonl(~((1 << (32 - rtm->rtm_dst_len)) - 1));
+            printf("#5 - addr: %u, remote: %u, mask: %u\n", addr->s_addr, info->remote_addr.ipv4.s_addr, mask);
+            if ((info->remote_addr.ipv4.s_addr & mask) == (addr->s_addr & mask)) {
+                    info->reachable = 1;
+            }
         }
     }
 
     info->prefix_len = rtm->rtm_dst_len;
 }
 
-int netlink_route_is_reachable(const char *iface, struct sockaddr_storage *dest)
+int netlink_route_is_reachable(const char *iface, struct sockaddr_storage *sa_remote)
 {
     struct netlink_socket nl_sock;
-    struct netlink_message msg;
+    struct netlink_message msg, recv_msg;
+    int ret, len;
+    enum ucs_netlink_parse_status parse_status;
     struct route_info info = {0};
-    int ret;
 
     info.if_index = if_nametoindex(iface);
     if (info.if_index == 0) {
         return -1; /* interface not found */
     }
 
-    info.family = dest->ss_family;
+    info.family = sa_remote->ss_family;
     if (info.family == AF_INET) {
-        info.dest.ipv4 = ((struct sockaddr_in *)dest)->sin_addr;
+        info.remote_addr.ipv4 = ((struct sockaddr_in *)sa_remote)->sin_addr;
     } else if (info.family == AF_INET6) {
-        info.dest.ipv6 = ((struct sockaddr_in6 *)dest)->sin6_addr;
+        info.remote_addr.ipv6 = ((struct sockaddr_in6 *)sa_remote)->sin6_addr;
     } else {
         return -1; /* unsupported address family */
     }
@@ -215,21 +212,21 @@ int netlink_route_is_reachable(const char *iface, struct sockaddr_storage *dest)
         return -1;
     }
 
-    netlink_msg_init(&msg, RTM_GETROUTE, NLM_F_REQUEST | NLM_F_DUMP);
-
-    struct rtmsg *rtm = NLMSG_DATA(&msg.hdr);
-    rtm->rtm_family = info.family;
-    rtm->rtm_table = RT_TABLE_MAIN;
-
     ret = netlink_send(&nl_sock, &msg);
     if (ret < 0) {
         netlink_socket_close(&nl_sock);
         return -1;
     }
 
-    while ((ret = netlink_recv(&nl_sock, &msg)) > 0) {
-        ret = netlink_parse_msg(&msg, parse_route, &info);
-        if (ret < 0 || info.reachable) {
+    while ((len = netlink_recv(&nl_sock, &recv_msg)) > 0) {
+        printf("buf->nlmsg_len: %d\n", ((struct nlmsghdr *)recv_msg.buf)->nlmsg_len);
+        // ((struct nlmsghdr *)recv_msg.buf)->nlmsg_len = len;
+        printf("len = recv(): %d\n", len);
+        ret = netlink_parse_msg(&recv_msg, len, &parse_status, parse_route, &info);
+        if (parse_status == UCS_NL_STATUS_DONE ||
+            parse_status == UCS_NL_STATUS_ERROR || /* redundant - should handle
+                                                      'status' and 'ret' later */
+            ret < 0 || info.reachable) {
             break;
         }
     }

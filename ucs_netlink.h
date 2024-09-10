@@ -7,6 +7,14 @@
 
 #define NETLINK_BUFFER_SIZE 8192
 
+/*********** TEMP ********* */
+enum ucs_netlink_parse_status {
+    UCS_NL_STATUS_OK = 0,
+    UCS_NL_STATUS_DONE = 1,
+    UCS_NL_STATUS_ERROR = 2,
+};
+/*********** TEMP ********* */
+
 struct netlink_socket {
     int fd;
     struct sockaddr_nl local;
@@ -14,7 +22,6 @@ struct netlink_socket {
 };
 
 struct netlink_message {
-    struct nlmsghdr hdr;
     char buf[NETLINK_BUFFER_SIZE];
 };
 
