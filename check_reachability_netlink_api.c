@@ -7,25 +7,39 @@
 
 int main(int argc, char *argv[])
 {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <interface> <destination_ip>\n", argv[0]);
+    const char *interface;
+    const char *dest_ip;
+    sa_family_t sa_family;
+    struct sockaddr_in sa_remote_in;
+    struct sockaddr_in6 sa_remote_in6;
+    struct sockaddr_storage *sa_remote;
+    void *sin_addr;
+
+    if (argc != 3 && argc != 4) {
+        fprintf(stderr, "Usage: %s <interface> <destination_ip> [-6]\n", argv[0]);
         return EXIT_FAILURE;
     }
 
-    const char *interface = argv[1];
-    const char *dest_ip = argv[2];
+    interface = argv[1];
+    dest_ip = argv[2];
     
-    struct sockaddr_storage sa_remote;
-    struct sockaddr_in *sa_remote_in = (struct sockaddr_in*)&sa_remote;
-    
-    // Convert the destination IP string to sockaddr_in for sa_remote (IPv4)
-    sa_remote_in->sin_family = AF_INET;
-    if (inet_pton(AF_INET, argv[2], &sa_remote_in->sin_addr) != 1) {
+    if (argc == 3) {
+        sa_remote_in.sin_family = AF_INET;
+        sa_remote = (struct sockaddr_storage *)&sa_remote_in;
+        sin_addr = &sa_remote_in.sin_addr;
+    } else if (argc == 4) {
+        sa_remote_in6.sin6_family = AF_INET6;
+        sa_remote = (struct sockaddr_storage *)&sa_remote_in6;
+        sin_addr = &sa_remote_in6.sin6_addr;
+    }
+
+    // Convert the destination IP string to sockaddr_in/sockaddr_in6 for sa_remote
+    if (inet_pton(sa_remote->ss_family, dest_ip, sin_addr) != 1) {
         perror("inet_pton");
         return EXIT_FAILURE;
     }
 
-    int result = netlink_route_is_reachable(interface, &sa_remote);
+    int result = netlink_route_is_reachable(interface, sa_remote);
 
     if (result == 1) {
         printf("IP %s is reachable through %s\n", dest_ip, interface);

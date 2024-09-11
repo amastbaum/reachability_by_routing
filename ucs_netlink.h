@@ -4,16 +4,15 @@
 #include <sys/socket.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+#include "status.h"
 
 #define NETLINK_BUFFER_SIZE 8192
 
-/*********** TEMP ********* */
-enum ucs_netlink_parse_status {
+typedef enum ucs_nl_parse_status {
     UCS_NL_STATUS_OK = 0,
     UCS_NL_STATUS_DONE = 1,
     UCS_NL_STATUS_ERROR = 2,
-};
-/*********** TEMP ********* */
+} ucs_nl_parse_status_t;
 
 struct netlink_socket {
     int fd;
@@ -24,6 +23,25 @@ struct netlink_socket {
 struct netlink_message {
     char buf[NETLINK_BUFFER_SIZE];
 };
+
+// Socket Management
+ucs_status_t netlink_socket_create(struct netlink_socket *nl_sock);
+void netlink_socket_close(struct netlink_socket *nl_sock);
+
+// Message Construction
+void netlink_msg_init(struct netlink_message *msg, int type,
+                      int flags, int nlmsg_len);
+
+// Message Sending and Receiving
+ucs_status_t netlink_send(struct netlink_socket *nl_sock, struct netlink_message *msg);
+int netlink_recv(struct netlink_socket *nl_sock, struct netlink_message *msg);
+
+// Message Parsing
+ucs_nl_parse_status_t netlink_parse_msg(struct netlink_message *msg,
+                                        int msg_len,
+                                        void (*callback)(struct nlmsghdr *h, void *arg),
+                                        void *arg);
+int netlink_parse_rtattr(struct rtattr *attrs[], int max, struct rtattr *rta, int len);
 
 // Routing-specific Functions
 int netlink_get_routes(struct netlink_socket *nl_sock, int family);
