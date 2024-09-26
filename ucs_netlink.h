@@ -20,6 +20,19 @@ struct netlink_socket {
     struct sockaddr_nl peer;
 };
 
+struct route_info {
+    int if_index;
+    int family;
+
+    union {
+        struct in_addr ipv4;
+        struct in6_addr ipv6;
+    } remote_addr;
+
+    int prefix_len;
+    int reachable;
+};
+
 struct netlink_message {
     char buf[NETLINK_BUFFER_SIZE];
 };

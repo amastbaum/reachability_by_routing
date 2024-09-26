@@ -12,20 +12,6 @@
 #include "status.h"
 
 
-struct route_info {
-    int if_index;
-    int family;
-
-    union {
-        struct in_addr ipv4;
-        struct in6_addr ipv6;
-    } remote_addr;
-
-    int prefix_len;
-    int reachable;
-};
-
-
 ucs_status_t netlink_socket_create(struct netlink_socket *nl_sock)
 {
     int fd;
