@@ -236,6 +236,10 @@ int netlink_route_is_reachable(const char *iface, struct sockaddr_storage *sa_re
         }
     }
 
+    if (len < 0) {
+        printf("netlink_recv returned %d (%s)\n", len, strerror(len));
+    }
+
 out:
     netlink_socket_close(&nl_sock);
     return info.reachable;
